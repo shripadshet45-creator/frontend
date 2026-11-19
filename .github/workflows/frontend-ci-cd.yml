@@ -108,3 +108,48 @@ jobs:
           tags: |
             ${{ steps.image.outputs.tag }}
             ${{ steps.image.outputs.sha_tag }}
+
+  deploy-dev:
+    name: 3. Deploy to AKS (dev)
+    needs: image-build-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: dev
+    concurrency:
+      group: deploy-frontend-dev
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/setup-kubectl@v4
+
+      - name: Get kubeconfig
+        run: |
+          az aks get-credentials \
+            -g "${{ vars.AKS_RESOURCE_GROUP }}" \
+            -n "${{ vars.AKS_CLUSTER_NAME }}" \
+            --overwrite-existing
+
+      - name: Apply manifests
+        run: kubectl apply -f k8s/
+
+      - name: Use this build's image
+        run: |
+          kubectl set image deployment/frontend \
+            frontend=${{ needs.image-build-push.outputs.sha_tag }} \
+            -n money-movement
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/frontend -n money-movement --timeout=180s
+
+      - name: Show pods
+        if: always()
+        run: kubectl get pods -n money-movement -o wide
